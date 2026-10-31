@@ -107,6 +107,8 @@ func MapToParams(params map[string]interface{}) (string, error) {
 		case uint64:
 			it := v.(uint64)
 			fv = strconv.FormatUint(it, 10)
+		case bool:
+			fv = strconv.FormatBool(v.(bool))
 		case string:
 			fv = v.(string)
 		case []byte:

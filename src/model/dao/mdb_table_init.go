@@ -13,11 +13,13 @@ import (
 )
 
 var once sync.Once
+var migrationErr error
 
 // ResetMdbTableInitForTest resets the install/startup migration guard so tests
 // can exercise fresh temporary databases in the same process.
 func ResetMdbTableInitForTest() {
 	once = sync.Once{}
+	migrationErr = nil
 }
 
 // MdbTableInit performs AutoMigrate for all primary DB tables and seeds
@@ -27,13 +29,16 @@ func ResetMdbTableInitForTest() {
 // established.  The install wizard (see install/installer.go) writes the
 // .env file before bootstrap runs, so this function always finds the DB
 // available.
-func MdbTableInit() {
+func MdbTableInit() error {
 	once.Do(func() {
 		migrations := []struct {
 			name  string
 			model interface{}
 		}{
 			{"Orders", &mdb.Orders{}},
+			{"PaymentCandidate", &mdb.PaymentCandidate{}},
+			{"TronScanCheckpoint", &mdb.TronScanCheckpoint{}},
+			{"ScanHealth", &mdb.ScanHealth{}},
 			{"WalletAddress", &mdb.WalletAddress{}},
 			{"AdminUser", &mdb.AdminUser{}},
 			{"ApiKey", &mdb.ApiKey{}},
@@ -47,6 +52,7 @@ func MdbTableInit() {
 		}
 		for _, m := range migrations {
 			if err := Mdb.AutoMigrate(m.model); err != nil {
+				migrationErr = err
 				color.Red.Printf("[store_db] AutoMigrate DB(%s),err=%s\n", m.name, err)
 				return
 			}
@@ -59,6 +65,7 @@ func MdbTableInit() {
 		seedDefaultSettings()
 		seedTelegramChannelFromSettings()
 	})
+	return migrationErr
 }
 
 // seedChains inserts the built-in networks as enabled rows. Uses

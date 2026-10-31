@@ -608,41 +608,12 @@ func TestManualVerifyEvmRequestFailureFallsBackToNextClient(t *testing.T) {
 	cleanup := testutil.SetupTestDatabases(t)
 	defer cleanup()
 
-	contract := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
-	rawAmount := big.NewInt(1230000)
-	receipt := &types.Receipt{
-		Status:      types.ReceiptStatusSuccessful,
-		BlockNumber: big.NewInt(10),
-		Logs: []*types.Log{{
-			Address: contract,
-			Topics: []common.Hash{
-				erc20TransferEventHash,
-				common.Hash{},
-				common.BytesToHash(to.Bytes()),
-			},
-			Data: common.LeftPadBytes(rawAmount.Bytes(), 32),
-		}},
-	}
-	order := &mdb.Orders{
-		Network:        mdb.NetworkEthereum,
-		Token:          "USDT",
-		ActualAmount:   1.23,
-		ReceiveAddress: to.Hex(),
-		BaseModel:      mdb.BaseModel{CreatedAt: *carbon.NewTime(carbon.CreateFromTimestampMilli(time.Now().Add(-time.Minute).UnixMilli()))},
-	}
-	token := &mdb.ChainToken{Network: mdb.NetworkEthereum, Symbol: "USDT", ContractAddress: contract.Hex(), Decimals: 6}
+	reader, order, token, txHash := evmPaymentEvidenceFixture()
 
 	err := validateManualEvmPaymentAcrossClients(context.Background(), []manualEvmClient{
 		{label: "ws bad", reader: &fakeEvmReader{receiptErr: errors.New("ws receipt failed")}},
-		{label: "http ok", reader: &fakeEvmReader{
-			receipt: receipt,
-			headers: map[string]*types.Header{
-				"10":     {Number: big.NewInt(10), Time: uint64(time.Now().Unix())},
-				"latest": {Number: big.NewInt(12), Time: uint64(time.Now().Unix())},
-			},
-		}},
-	}, order, common.HexToHash("0x"+strings.Repeat("c", 64)), token)
+		{label: "http ok", reader: reader},
+	}, order, txHash, token)
 	if err != nil {
 		t.Fatalf("validateManualEvmPaymentAcrossClients(): %v", err)
 	}
@@ -681,7 +652,7 @@ func TestManualVerifyTronTRC20UsesTransferEvent(t *testing.T) {
 		},
 		Data: "0x" + fmt.Sprintf("%064x", rawAmount),
 	}}}
-	order := &mdb.Orders{ReceiveAddress: recipientAddress, Token: "USDT", ActualAmount: 1.23}
+	order := &mdb.Orders{Network: mdb.NetworkTron, ReceiveAddress: recipientAddress, Token: "USDT", ActualAmount: 1.23}
 
 	if err = validateManualTronTRC20Transfer(order, &tx, info); err != nil {
 		t.Fatalf("validateManualTronTRC20Transfer(): %v", err)
@@ -712,6 +683,9 @@ func TestManualVerifyTronPaymentHTTPFlow(t *testing.T) {
 	rawAmount := big.NewInt(1230000)
 	blockTimeMs := time.Now().Add(time.Minute).UnixMilli()
 	requestCalls := 0
+	txResult, receiptResult, receiptID := "SUCCESS", "SUCCESS", txID
+	topicPadding := strings.Repeat("0", 24)
+	eventData := fmt.Sprintf("%064x", rawAmount)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-USER-IP"); got != "" {
 			t.Errorf("X-USER-IP header = %q, want empty", got)
@@ -742,22 +716,22 @@ func TestManualVerifyTronPaymentHTTPFlow(t *testing.T) {
 						},
 					}},
 				},
-				"ret": []map[string]string{{"contractRet": "SUCCESS"}},
+				"ret": []map[string]string{{"contractRet": txResult}},
 			})
 		case "/wallet/gettransactioninfobyid":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":             txID,
+				"id":             receiptID,
 				"blockNumber":    100,
 				"blockTimeStamp": blockTimeMs,
-				"receipt":        map[string]string{"result": "SUCCESS"},
+				"receipt":        map[string]string{"result": receiptResult},
 				"log": []map[string]interface{}{{
 					"address": strings.TrimPrefix(contractHex, "41"),
 					"topics": []string{
 						strings.TrimPrefix(erc20TransferEventHash.Hex(), "0x"),
 						strings.Repeat("0", 64),
-						"0X" + strings.ToUpper(strings.Repeat("0", 24)+strings.TrimPrefix(recipientHex, "41")),
+						"0X" + strings.ToUpper(topicPadding+strings.TrimPrefix(recipientHex, "41")),
 					},
-					"data": fmt.Sprintf("%064x", rawAmount),
+					"data": eventData,
 				}},
 			})
 		case "/wallet/getnowblock":
@@ -812,6 +786,37 @@ func TestManualVerifyTronPaymentHTTPFlow(t *testing.T) {
 	}
 	if requestCalls != 3 {
 		t.Fatalf("manual verify request calls = %d, want 3", requestCalls)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		corrupt func()
+	}{
+		{"missing transaction success", func() { txResult = "" }},
+		{"failed transaction", func() { txResult = "REVERT" }},
+		{"missing token receipt success", func() { receiptResult = "" }},
+		{"failed token receipt", func() { receiptResult = "OUT_OF_ENERGY" }},
+		{"missing receipt id", func() { receiptID = "" }},
+		{"unrelated receipt", func() { receiptID = strings.Repeat("b", 64) }},
+		{"missing timestamp", func() { blockTimeMs = 0 }},
+		{"underpayment within display rounding", func() { eventData = fmt.Sprintf("%064x", 1229999) }},
+		{"overpayment within display rounding", func() { eventData = fmt.Sprintf("%064x", 1230001) }},
+		{"malformed amount word", func() { eventData = "12c4b0" }},
+		{"malformed recipient padding", func() { topicPadding = strings.Repeat("f", 24) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.corrupt()
+			if _, err := ValidateManualOrderPayment(order, txID); err == nil {
+				t.Fatal("incomplete or mismatched evidence was accepted")
+			}
+			txResult, receiptResult, receiptID = "SUCCESS", "SUCCESS", txID
+			blockTimeMs = time.Now().Add(time.Minute).UnixMilli()
+			eventData = fmt.Sprintf("%064x", rawAmount)
+			topicPadding = strings.Repeat("0", 24)
+			if _, err := ValidateManualOrderPayment(order, txID); err != nil {
+				t.Fatalf("retry with complete evidence failed: %v", err)
+			}
+		})
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 const (
@@ -24,6 +24,8 @@ const (
 	evmBackfillCatchupDelay          = 250 * time.Millisecond
 	evmBackfillHeaderTimeout         = 10 * time.Second
 	evmBackfillQueryTimeout          = 30 * time.Second
+	evmPartialBatchMaxWait           = 5 * time.Second
+	evmPartialBatchRecheck           = 2 * time.Second
 )
 
 type evmRecipientStoreFunc func([]mdb.WalletAddress) int
@@ -60,7 +62,7 @@ func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address
 	ctx, cancel := chainEnabledWatchdog(network, logPrefix, chainTokenFingerprint(network))
 	defer cancel()
 
-	wallets, err := data.GetAvailableWalletAddressByNetwork(network)
+	wallets, err := data.GetScanWallets(network)
 	if err != nil {
 		log.Sugar.Errorf("%s failed to get wallet addresses: %v", logPrefix, err)
 		return
@@ -78,7 +80,7 @@ func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				w, err := data.GetAvailableWalletAddressByNetwork(network)
+				w, err := data.GetScanWallets(network)
 				if err != nil {
 					log.Sugar.Warnf("%s refresh wallet addresses: %v", logPrefix, err)
 					continue
@@ -110,10 +112,10 @@ func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address
 		}
 
 		dialCtx, cancelDial := context.WithTimeout(ctx, evmNodeDialTimeout)
-		client, err := ethclient.DialContext(dialCtx, node.Url)
+		client, closeClient, err := dialBackfillEVM(dialCtx, node.Url, network)
 		cancelDial()
 		if err != nil {
-			log.Sugar.Warnf("%s dial: %v, retry in %s", logPrefix, err, failWait)
+			log.Sugar.Warnf("%s dial: %v, retry in %s", logPrefix, safeRPCError(err), failWait)
 			if recordEvmNodeFailure(logPrefix, network, node, "dial") {
 				return
 			}
@@ -125,14 +127,14 @@ func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address
 		}
 
 		err = runEvmBackfillLoop(ctx, client, network, logPrefix, node, query, isWatchedRecipient)
-		client.Close()
+		closeClient()
 
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
-			log.Sugar.Warnf("%s backfill loop stopped: %v, retry in %s", logPrefix, err, failWait)
-			if recordEvmNodeFailure(logPrefix, network, node, err.Error()) {
+			log.Sugar.Warnf("%s backfill loop stopped: %v, retry in %s", logPrefix, safeRPCError(err), failWait)
+			if recordEvmNodeFailure(logPrefix, network, node, safeRPCError(err).Error()) {
 				return
 			}
 			if !sleepOrDone(ctx, failWait) {
@@ -149,12 +151,13 @@ func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address
 	}
 }
 
-func runEvmBackfillLoop(ctx context.Context, client *ethclient.Client, network, logPrefix string, node mdb.RpcNode, baseQuery ethereum.FilterQuery, isWatchedRecipient evmRecipientCheckerFunc) error {
+func runEvmBackfillLoop(ctx context.Context, client evmBackfillRPC, network, logPrefix string, node mdb.RpcNode, baseQuery ethereum.FilterQuery, isWatchedRecipient evmRecipientCheckerFunc) error {
 	lastBlock, initialized, err := loadEvmScanCursor(network)
 	if err != nil {
 		return err
 	}
 
+	var partialDeadline time.Time
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -177,12 +180,52 @@ func runEvmBackfillLoop(ctx context.Context, client *ethclient.Client, network, 
 		}
 
 		confirmedHead := confirmedEvmHead(latest.Number.Int64(), chain.MinConfirmations)
+		if network == mdb.NetworkBsc {
+			// BSC discovery follows finalized blocks; WSS observations remain hints.
+			rpcCtx, cancel := context.WithTimeout(ctx, evmBackfillHeaderTimeout)
+			chainID, e := client.ChainID(rpcCtx)
+			if e != nil || chainID.Cmp(big.NewInt(56)) != 0 {
+				cancel()
+				return fmt.Errorf("BSC chain identity unavailable")
+			}
+			final, e := client.HeaderByNumber(rpcCtx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
+			cancel()
+			if e != nil || final == nil || final.Number == nil || !final.Number.IsInt64() || final.Number.Sign() <= 0 || final.Number.Cmp(latest.Number) > 0 {
+				return fmt.Errorf("BSC finalized head unavailable")
+			}
+			confirmedHead = final.Number.Int64()
+			if err := data.RecordScanHead(network, confirmedHead, int64(final.Time)*1000); err != nil {
+				return err
+			}
+			state, e := data.GetScanHealth(network)
+			if e != nil {
+				return e
+			}
+			if initialized && state.ScannedHash != "" {
+				previous, e := latestEvmBlockHeader(ctx, client, uint64(lastBlock))
+				if e != nil || previous == nil || previous.Hash().Hex() != state.ScannedHash {
+					return fmt.Errorf("finalized checkpoint changed; reconciliation required")
+				}
+			}
+			if initialized && lastBlock > confirmedHead {
+				return fmt.Errorf("checkpoint ahead of finalized head")
+			}
+		}
 		if !initialized {
+			if network == mdb.NetworkBsc {
+				history, e := data.HasFixedOrderHistory(network)
+				if e != nil {
+					return e
+				}
+				if history {
+					return fmt.Errorf("BSC checkpoint missing with fixed history; explicit replay required")
+				}
+			}
 			lastBlock = confirmedHead - evmBackfillInitialLookbackBlocks
 			if lastBlock < 0 {
 				lastBlock = 0
 			}
-			if err := data.UpsertEvmScanCursor(network, lastBlock); err != nil {
+			if err := saveEvmProgress(ctx, client, network, lastBlock); err != nil {
 				return fmt.Errorf("initialize backfill cursor: %w", err)
 			}
 			initialized = true
@@ -190,11 +233,28 @@ func runEvmBackfillLoop(ctx context.Context, client *ethclient.Client, network, 
 		}
 
 		if lastBlock >= confirmedHead {
+			partialDeadline = time.Time{}
 			if !sleepOrDone(ctx, interval) {
 				return nil
 			}
 			continue
 		}
+
+		// Let a partial BSC range fill briefly instead of paying for many tiny
+		// getLogs calls. The deadline is fixed for this range, so a stalled or
+		// slow chain still flushes it; no block is skipped or marked scanned.
+		if network == mdb.NetworkBsc && confirmedHead-lastBlock < evmBackfillBatchSize(network) {
+			if partialDeadline.IsZero() {
+				partialDeadline = time.Now().Add(min(interval, evmPartialBatchMaxWait))
+			}
+			if remaining := time.Until(partialDeadline); remaining > 0 {
+				if !sleepOrDone(ctx, min(remaining, evmPartialBatchRecheck)) {
+					return nil
+				}
+				continue
+			}
+		}
+		partialDeadline = time.Time{}
 
 		fromBlock := lastBlock + 1
 		toBlock := fromBlock + evmBackfillBatchSize(network) - 1
@@ -218,14 +278,14 @@ func runEvmBackfillLoop(ctx context.Context, client *ethclient.Client, network, 
 		logs, err := client.FilterLogs(rpcCtx, batchQuery)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("filter logs range=%d-%d: %w", fromBlock, toBlock, err)
+			return fmt.Errorf("filter logs range=%d-%d: %w", fromBlock, toBlock, safeRPCError(err))
 		}
 
 		if err := processEvmBackfillLogs(ctx, client, network, logPrefix, logs, isWatchedRecipient); err != nil {
 			return err
 		}
-		if err := data.UpsertEvmScanCursor(network, toBlock); err != nil {
-			return fmt.Errorf("save backfill cursor range=%d-%d: %w", fromBlock, toBlock, err)
+		if err := saveEvmProgress(ctx, client, network, toBlock); err != nil {
+			return fmt.Errorf("save backfill cursor range=%d-%d: %w", fromBlock, toBlock, safeRPCError(err))
 		}
 		lastBlock = toBlock
 
@@ -244,8 +304,8 @@ func runEvmBackfillLoop(ctx context.Context, client *ethclient.Client, network, 
 	}
 }
 
-func processEvmBackfillLogs(ctx context.Context, client *ethclient.Client, network, logPrefix string, logs []types.Log, isWatchedRecipient evmRecipientCheckerFunc) error {
-	headerCache := make(map[uint64]int64)
+func processEvmBackfillLogs(ctx context.Context, client evmBackfillRPC, network, logPrefix string, logs []types.Log, isWatchedRecipient evmRecipientCheckerFunc) error {
+	headerCache := make(map[uint64]*types.Header)
 	for _, vLog := range logs {
 		if len(vLog.Topics) < 3 {
 			continue
@@ -259,25 +319,43 @@ func processEvmBackfillLogs(ctx context.Context, client *ethclient.Client, netwo
 			continue
 		}
 
-		blockTsMs, ok := headerCache[vLog.BlockNumber]
+		header, ok := headerCache[vLog.BlockNumber]
 		if !ok {
-			header, err := latestEvmBlockHeader(ctx, client, vLog.BlockNumber)
+			var err error
+			header, err = latestEvmBlockHeader(ctx, client, vLog.BlockNumber)
 			if err != nil {
 				return fmt.Errorf("fetch block header network=%s block=%d: %w", network, vLog.BlockNumber, err)
 			}
 			if header == nil || header.Time == 0 {
 				return fmt.Errorf("missing block header timestamp network=%s block=%d", network, vLog.BlockNumber)
 			}
-			blockTsMs = int64(header.Time) * 1000
-			headerCache[vLog.BlockNumber] = blockTsMs
+			headerCache[vLog.BlockNumber] = header
 		}
 
+		if header.Number == nil || !header.Number.IsUint64() || header.Number.Uint64() != vLog.BlockNumber || header.Hash() != vLog.BlockHash {
+			return fmt.Errorf("log block is no longer canonical")
+		}
+		blockTsMs := int64(header.Time) * 1000
+		handled, err := service.RecordFixedEVMLog(network, vLog, blockTsMs)
+		if err != nil {
+			return fmt.Errorf("persist candidate network=%s: %w", network, err)
+		}
+		if handled || vLog.Removed {
+			continue
+		}
 		service.TryProcessEvmERC20Transfer(network, vLog.Address, toAddr, new(big.Int).SetBytes(vLog.Data), vLog.TxHash.Hex(), blockTsMs)
 	}
 	return nil
 }
 
 func loadEvmScanCursor(network string) (int64, bool, error) {
+	if network == mdb.NetworkBsc {
+		row, err := data.GetScanHealth(network)
+		if err != nil {
+			return 0, false, err
+		}
+		return row.Scanned, row.ScannedHash != "", nil
+	}
 	row, err := data.GetEvmScanCursor(network)
 	if err != nil {
 		return 0, false, err
@@ -302,7 +380,7 @@ func evmBackfillChainConfig(network string) (*mdb.Chain, time.Duration) {
 
 func evmBackfillBatchSize(network string) int64 {
 	if network == mdb.NetworkBsc {
-		return 200
+		return 10 // Compatible with the selected Alchemy free eth_getLogs range.
 	}
 	return evmBackfillBatchBlocks
 }
@@ -318,7 +396,7 @@ func confirmedEvmHead(head int64, minConfirmations int) int64 {
 	return head - conf + 1
 }
 
-func latestEvmHeader(ctx context.Context, client *ethclient.Client, network, logPrefix string) (*types.Header, error) {
+func latestEvmHeader(ctx context.Context, client evmBackfillRPC, network, logPrefix string) (*types.Header, error) {
 	headerCtx, cancel := context.WithTimeout(ctx, evmBackfillHeaderTimeout)
 	defer cancel()
 
@@ -327,7 +405,7 @@ func latestEvmHeader(ctx context.Context, client *ethclient.Client, network, log
 		if ctx.Err() != nil {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("latest header: %w", err)
+		return nil, fmt.Errorf("latest header: %w", safeRPCError(err))
 	}
 	data.RecordRpcSuccess(network)
 	if header != nil {
@@ -339,8 +417,20 @@ func latestEvmHeader(ctx context.Context, client *ethclient.Client, network, log
 	return header, nil
 }
 
-func latestEvmBlockHeader(ctx context.Context, client *ethclient.Client, blockNumber uint64) (*types.Header, error) {
+func latestEvmBlockHeader(ctx context.Context, client evmBackfillRPC, blockNumber uint64) (*types.Header, error) {
 	headerCtx, cancel := context.WithTimeout(ctx, evmBackfillHeaderTimeout)
 	defer cancel()
-	return client.HeaderByNumber(headerCtx, big.NewInt(int64(blockNumber)))
+	header, err := client.HeaderByNumber(headerCtx, big.NewInt(int64(blockNumber)))
+	return header, safeRPCError(err)
+}
+
+func saveEvmProgress(ctx context.Context, client evmBackfillRPC, network string, height int64) error {
+	if network != mdb.NetworkBsc {
+		return data.UpsertEvmScanCursor(network, height)
+	}
+	header, err := latestEvmBlockHeader(ctx, client, uint64(height))
+	if err != nil || header == nil || header.Number == nil || header.Number.Int64() != height {
+		return fmt.Errorf("checkpoint header unavailable")
+	}
+	return data.SaveScanProgress(network, height, header.Hash().Hex())
 }

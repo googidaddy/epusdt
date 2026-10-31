@@ -193,6 +193,7 @@ func OrderSuccessWithStatusesWithTransaction(tx *gorm.DB, req *request.OrderProc
 	result := tx.Model(&mdb.Orders{}).
 		Where("trade_id = ?", req.TradeId).
 		Where("status IN ?", allowedStatuses).
+		Where("payment_terms IS NULL AND payment_expires_at_ms = 0"). // Fixed orders require independent settlement, not scanner/manual success.
 		Updates(map[string]interface{}{
 			"block_transaction_id": req.BlockTransactionId,
 			"status":               mdb.StatusPaySuccess,
@@ -233,7 +234,7 @@ func UpdateOrderIsExpirationById(id uint64, expirationCutoff time.Time) (bool, e
 	result := dao.Mdb.Model(mdb.Orders{}).
 		Where("id = ?", id).
 		Where("status IN ?", []int{mdb.StatusWaitPay, mdb.StatusWaitSelect}).
-		Where("created_at <= ?", expirationCutoff).
+		Where("(payment_expires_at_ms > 0 AND payment_expires_at_ms <= ?) OR (payment_expires_at_ms = 0 AND created_at <= ?)", time.Now().UnixMilli(), expirationCutoff).
 		Update("status", mdb.StatusExpired)
 	return result.RowsAffected > 0, result.Error
 }
@@ -304,6 +305,7 @@ func MarkParentOrderSuccessWithStatusesWithTransaction(tx *gorm.DB, parentTradeI
 	result := tx.Model(&mdb.Orders{}).
 		Where("trade_id = ?", parentTradeId).
 		Where("status IN ?", allowedStatuses).
+		Where("payment_terms IS NULL AND payment_expires_at_ms = 0").
 		Updates(map[string]interface{}{
 			"status":           mdb.StatusPaySuccess,
 			"callback_confirm": mdb.CallBackConfirmNo,
@@ -400,7 +402,7 @@ func ExpireOrderByTradeID(tradeId string) error {
 // Called on the parent order when a sub-order is created or returned.
 func RefreshOrderExpiration(tradeId string) error {
 	return dao.Mdb.Model(&mdb.Orders{}).
-		Where("trade_id = ?", tradeId).
+		Where("trade_id = ? AND payment_expires_at_ms = 0", tradeId).
 		Update("created_at", time.Now()).Error
 }
 

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/model/request"
@@ -97,6 +96,12 @@ func TryProcessTronTRC20Transfer(token mdb.ChainToken, toAddr string, rawValue *
 	if strings.ToUpper(strings.TrimSpace(order.Token)) != tokenSym {
 		log.Sugar.Warnf("[TRC20-%s][%s] skip trade_id=%s token mismatch order=%s", tokenSym, addr, tradeID, order.Token)
 		return
+	}
+	if order.PaymentTerms != nil || order.PaymentExpiresAtMs != 0 {
+		if err := validateFixedTransferCandidate(order, token.ContractAddress, rawValue, blockTsMs); err != nil {
+			log.Sugar.Warnf("[TRC20] fixed payment candidate rejected trade_id=%s: %v", tradeID, err)
+			return
+		}
 	}
 	if blockTsMs > 0 && blockTsMs < order.CreatedAt.TimestampMilli() {
 		log.Sugar.Warnf("[TRC20-%s][%s] skip tx %s because block time %d is before order create time %d", tokenSym, addr, txHash, blockTsMs, order.CreatedAt.TimestampMilli())
@@ -263,6 +268,12 @@ func TryProcessEvmERC20Transfer(chainNetwork string, contract common.Address, to
 		log.Sugar.Warnf("[%s-%s][%s] skip trade_id=%s token mismatch order=%s", net, tokenSym, walletAddr, order.TradeId, order.Token)
 		return
 	}
+	if order.PaymentTerms != nil || order.PaymentExpiresAtMs != 0 {
+		if err := validateFixedTransferCandidate(order, contract.Hex(), rawValue, blockTsMs); err != nil {
+			log.Sugar.Warnf("[EVM] fixed payment candidate rejected trade_id=%s: %v", order.TradeId, err)
+			return
+		}
+	}
 	if blockTsMs > 0 && blockTsMs < order.CreatedAt.TimestampMilli() {
 		log.Sugar.Warnf("[%s-%s][%s] skip tx %s because block time %d is before order create time %d", net, tokenSym, walletAddr, txHash, blockTsMs, order.CreatedAt.TimestampMilli())
 		return
@@ -270,7 +281,7 @@ func TryProcessEvmERC20Transfer(chainNetwork string, contract common.Address, to
 
 	allowedStatuses := []int{mdb.StatusWaitPay}
 	if order.Status == mdb.StatusExpired {
-		expirationTs := order.CreatedAt.AddMinutes(config.GetOrderExpirationTime()).TimestampMilli()
+		expirationTs := paymentExpirationMs(order)
 		if blockTsMs <= 0 || blockTsMs > expirationTs {
 			log.Sugar.Warnf("[%s-%s][%s] skip expired trade_id=%s because block time %d is after expiration %d", net, tokenSym, walletAddr, order.TradeId, blockTsMs, expirationTs)
 			return

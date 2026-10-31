@@ -153,19 +153,22 @@ func doPost(url string, apiKey string, body interface{}) ([]byte, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, safeRPCError(err)
 	}
 	defer resp.Body.Close()
 
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024+1))
+	if err != nil || len(b) > 16*1024*1024 {
+		return nil, fmt.Errorf("RPC response unavailable or too large")
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("RPC HTTP %d", resp.StatusCode)
 	}
 	return b, nil
 }
 
 func GetNowBlock(baseURL string, apiKey string) (*Block, error) {
-	b, err := doPost(baseURL+"/wallet/getnowblock", apiKey, map[string]interface{}{})
+	b, err := doPost(baseURL+"/walletsolidity/getnowblock", apiKey, map[string]interface{}{})
 	if err != nil {
 		data.RecordRpcFailure(mdb.NetworkTron)
 		return nil, err
@@ -181,7 +184,7 @@ func GetNowBlock(baseURL string, apiKey string) (*Block, error) {
 }
 
 func GetBlockByNum(baseURL string, apiKey string, num int64) (*Block, error) {
-	b, err := doPost(baseURL+"/wallet/getblockbynum", apiKey, map[string]interface{}{"num": num})
+	b, err := doPost(baseURL+"/walletsolidity/getblockbynum", apiKey, map[string]interface{}{"num": num})
 	if err != nil {
 		data.RecordRpcFailure(mdb.NetworkTron)
 		return nil, err
@@ -195,11 +198,11 @@ func GetBlockByNum(baseURL string, apiKey string, num int64) (*Block, error) {
 	return &block, nil
 }
 
-func loadTronTRC20TokenMap() map[string]mdb.ChainToken {
+func loadTronTRC20TokenMap() (map[string]mdb.ChainToken, error) {
 	tokens, err := data.ListEnabledChainTokensByNetwork(mdb.NetworkTron)
 	if err != nil {
 		log.Sugar.Warnf("[TRON-BLOCK] load chain_tokens: %v", err)
-		return nil
+		return nil, err
 	}
 	tokenMap := make(map[string]mdb.ChainToken)
 	for _, token := range tokens {
@@ -210,12 +213,12 @@ func loadTronTRC20TokenMap() map[string]mdb.ChainToken {
 		}
 		contractHex, err := TronAddressToHex(contractAddress)
 		if err != nil {
-			log.Sugar.Warnf("[TRON-BLOCK] skip invalid TRC20 contract symbol=%s address=%s err=%v", symbol, contractAddress, err)
-			continue
+			log.Sugar.Warnf("[TRON-BLOCK] invalid TRC20 contract; stopping scan, symbol=%s address=%s err=%v", symbol, contractAddress, err)
+			return nil, err
 		}
 		tokenMap[contractHex] = token
 	}
-	return tokenMap
+	return tokenMap, nil
 }
 
 func parseTRC20Transfer(tx Transaction, tokenMap map[string]mdb.ChainToken) *TRC20Transfer {
@@ -328,7 +331,7 @@ func parseTRXTransfer(tx Transaction) *TRXTransfer {
 	}
 }
 
-func processBlock(block *Block, tokenMap map[string]mdb.ChainToken) {
+func processBlock(block *Block, tokenMap map[string]mdb.ChainToken) error {
 	blockTsMs := block.BlockHeader.RawData.Timestamp
 	for _, tx := range block.Transactions {
 		if t := parseTRC20Transfer(tx, tokenMap); t != nil {
@@ -345,6 +348,7 @@ func processBlock(block *Block, tokenMap map[string]mdb.ChainToken) {
 			service.TryProcessTronTRXTransfer(t.To, t.RawSun, t.TxID, blockTsMs)
 		}
 	}
+	return nil
 }
 
 type Scanner struct {
@@ -353,6 +357,7 @@ type Scanner struct {
 	nodeID    uint64
 	nodeLabel string
 	lastBlock int64
+	lastHash  string
 	// 统计
 	totalBlocks   int64
 	totalTRC20Txs int64
@@ -376,7 +381,32 @@ func (s *Scanner) Init() error {
 		s.recordRpcFailure("initial get latest block")
 		return fmt.Errorf("获取初始块失败: %w", err)
 	}
-	s.lastBlock = block.BlockHeader.RawData.Number
+	if block.BlockHeader.RawData.Number <= 0 || !validTronHash(block.BlockID) {
+		return fmt.Errorf("invalid initial TRON height")
+	}
+	checkpoint, err := data.GetTronScanCheckpoint()
+	if err != nil {
+		return err
+	}
+	if checkpoint.Network != "" {
+		if checkpoint.LastBlock < 0 || checkpoint.LastBlock > block.BlockHeader.RawData.Number {
+			return fmt.Errorf("TRON checkpoint ahead of current RPC height")
+		}
+		s.lastBlock = checkpoint.LastBlock
+		s.lastHash = checkpoint.LastHash
+	} else {
+		hasHistory, err := data.HasFixedTronOrderHistory()
+		if err != nil {
+			return err
+		}
+		if hasHistory {
+			return fmt.Errorf("TRON checkpoint missing with fixed order history; explicit replay start required")
+		}
+		s.lastBlock = block.BlockHeader.RawData.Number - 1
+		if err := data.SaveTronScanCheckpoint(s.lastBlock); err != nil {
+			return err
+		}
+	}
 	log.Sugar.Infof("[TRON-BLOCK] start block=%d", s.lastBlock)
 	return nil
 }
@@ -414,14 +444,29 @@ func (s *Scanner) poll() {
 		return
 	}
 	latestNum := latest.BlockHeader.RawData.Number
+	if !validTronHash(latest.BlockID) || latestNum < s.lastBlock {
+		return
+	}
+	if s.lastHash != "" {
+		previous, err := GetBlockByNum(s.baseURL, s.apiKey, s.lastBlock)
+		if err != nil || previous.BlockID != s.lastHash {
+			return
+		} // finalized history changed: stop, never skip.
+	}
+	if err := data.RecordScanHead(mdb.NetworkTron, latestNum, latest.BlockHeader.RawData.Timestamp); err != nil {
+		return
+	}
 	if latestNum <= s.lastBlock {
 		data.RecordRpcNodeSuccess(s.nodeID)
 		return
 	}
 
-	tokenMap := loadTronTRC20TokenMap()
+	tokenMap, err := loadTronTRC20TokenMap()
+	if err != nil {
+		return
+	}
 	hadBlockFetchError := false
-	for num := s.lastBlock + 1; num <= latestNum; num++ {
+	for num, budget := s.lastBlock+1, 0; num <= latestNum && budget < 100; num, budget = num+1, budget+1 {
 		var block *Block
 		if num == latestNum {
 			block = latest
@@ -434,8 +479,28 @@ func (s *Scanner) poll() {
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
-		processBlock(block, tokenMap)
+		if block.BlockHeader.RawData.Number != num || !validTronHash(block.BlockID) || (s.lastHash != "" && block.BlockHeader.RawData.ParentHash != s.lastHash) {
+			return
+		}
+		receipts, receiptErr := doPost(s.baseURL+"/wallet/gettransactioninfobyblocknum", s.apiKey, map[string]interface{}{"num": num})
+		if receiptErr != nil {
+			s.recordRpcFailure("block receipts")
+			return
+		}
+		if err := processTronReceipts(block, receipts); err != nil {
+			log.Sugar.Errorf("[TRON-BLOCK] incomplete receipts at block %d", num)
+			return
+		}
+		if err := processBlock(block, tokenMap); err != nil {
+			log.Sugar.Errorf("[TRON-BLOCK] persist candidates at block %d: %v", num, err)
+			return
+		}
+		if err := data.SaveTronScanBlock(num, block.BlockID); err != nil {
+			log.Sugar.Errorf("[TRON-BLOCK] persist checkpoint at block %d: %v", num, err)
+			return
+		}
 		s.lastBlock = num
+		s.lastHash = block.BlockID
 		s.totalBlocks++
 
 		for _, tx := range block.Transactions {

@@ -97,6 +97,7 @@ func validateCreateTransactionTokenNetwork(token, network string) error {
 
 func buildCreateTransactionResponse(order *mdb.Orders) *response.CreateTransactionResponse {
 	return &response.CreateTransactionResponse{
+		PaymentTerms:   order.PaymentTerms,
 		TradeId:        order.TradeId,
 		OrderId:        order.OrderId,
 		Amount:         order.Amount,
@@ -105,7 +106,7 @@ func buildCreateTransactionResponse(order *mdb.Orders) *response.CreateTransacti
 		ReceiveAddress: order.ReceiveAddress,
 		Token:          order.Token,
 		Status:         order.Status,
-		ExpirationTime: carbon.Now().AddMinutes(config.GetOrderExpirationTime()).Timestamp(),
+		ExpirationTime: paymentExpirationMs(order) / 1000,
 		PaymentUrl:     fmt.Sprintf("%s/pay/checkout-counter/%s", config.GetAppUri(), order.TradeId),
 	}
 }
@@ -141,7 +142,13 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 		return nil, err
 	}
 	if exist.ID > 0 {
+		if req.FixedPaymentIntent && fixedRequestMatches(exist, req, apiKey) {
+			return buildCreateTransactionResponse(exist), nil
+		}
 		return nil, constant.OrderAlreadyExists
+	}
+	if req.FixedPaymentIntent && (apiKeyID(apiKey) == 0 || token != "USDT" || (network != mdb.NetworkTron && network != mdb.NetworkBsc)) {
+		return nil, constant.ParamsMarshalErr
 	}
 
 	decimalPayAmount := decimal.NewFromFloat(payAmount)
@@ -198,7 +205,7 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 
 	tradeID := GenerateCode()
 	amount := math.MustParsePrecFloat64(decimalTokenAmount.InexactFloat64(), amountPrecision)
-	availableAddress, availableAmount, err := ReserveAvailableWalletAndAmount(tradeID, network, token, amount, walletAddress)
+	availableAddress, availableAmount, err := reserveWalletAndAmount(tradeID, network, token, amount, walletAddress, req.FixedPaymentIntent)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +213,6 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 		return nil, constant.NotAvailableAmountErr
 	}
 
-	tx := dao.Mdb.Begin()
 	order := &mdb.Orders{
 		TradeId:        tradeID,
 		OrderId:        req.OrderId,
@@ -225,6 +231,13 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 		PayProvider:    mdb.PaymentProviderOnChain,
 		ApiKeyID:       apiKeyID(apiKey),
 	}
+	if req.FixedPaymentIntent {
+		if err = bindPaymentTerms(order, req, rate); err != nil {
+			_ = data.UnLockTransactionByTradeId(tradeID)
+			return nil, err
+		}
+	}
+	tx := dao.Mdb.Begin()
 	if err = data.CreateOrderWithTransaction(tx, order); err != nil {
 		tx.Rollback()
 		_ = data.UnLockTransactionByTradeId(tradeID)
@@ -394,6 +407,10 @@ func orderProcessing(req *request.OrderProcessingRequest, opts orderProcessingOp
 
 // ReserveAvailableWalletAndAmount finds and locks a network+address+token+amount pair.
 func ReserveAvailableWalletAndAmount(tradeID string, network string, token string, amount float64, walletAddress []mdb.WalletAddress) (string, float64, error) {
+	return reserveWalletAndAmount(tradeID, network, token, amount, walletAddress, false)
+}
+
+func reserveWalletAndAmount(tradeID string, network string, token string, amount float64, walletAddress []mdb.WalletAddress, rejectHistory bool) (string, float64, error) {
 	availableAddress := ""
 	availableAmount := amount
 	amountPrecision := data.GetAmountPrecision()
@@ -401,6 +418,15 @@ func ReserveAvailableWalletAndAmount(tradeID string, network string, token strin
 	tryLockWalletFunc := func(targetAmount float64) (string, error) {
 		for _, address := range walletAddress {
 			normalizedAddress := normalizeOrderAddressByNetwork(network, address.Address)
+			if rejectHistory {
+				count, err := data.PaymentSlotOrderCount(network, normalizedAddress, token, targetAmount)
+				if err != nil {
+					return "", err
+				}
+				if count != 0 {
+					continue
+				}
+			}
 			err := data.LockTransaction(network, normalizedAddress, token, tradeID, targetAmount, config.GetOrderExpirationTimeDuration())
 			if err == nil {
 				return normalizedAddress, nil
@@ -579,6 +605,9 @@ func SwitchNetwork(req *request.SwitchNetworkRequest) (*response.CheckoutCounter
 	}
 	if parent.ID <= 0 {
 		return nil, constant.OrderNotExists
+	}
+	if parent.PaymentTerms != nil || parent.PaymentExpiresAtMs != 0 {
+		return nil, constant.ParamsMarshalErr
 	}
 	if parent.ParentTradeId != "" {
 		return nil, constant.CannotSwitchSubOrder
@@ -772,7 +801,7 @@ func buildCheckoutResponse(order *mdb.Orders) *response.CheckoutCounterResponse 
 		Network:        order.Network,
 		Status:         order.Status,
 		PaymentType:    strings.ToLower(paymentType),
-		ExpirationTime: order.CreatedAt.AddMinutes(config.GetOrderExpirationTime()).TimestampMilli(),
+		ExpirationTime: paymentExpirationMs(order),
 		RedirectUrl:    buildPublicRedirectURL(order),
 		CreatedAt:      order.CreatedAt.TimestampMilli(),
 		ServerTime:     carbon.Now().TimestampMilli(),

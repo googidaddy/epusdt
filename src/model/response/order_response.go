@@ -1,17 +1,20 @@
 package response
 
+import "github.com/GMWalletApp/epusdt/model/mdb"
+
 // CreateTransactionResponse 创建订单成功返回
 type CreateTransactionResponse struct {
-	TradeId        string  `json:"trade_id" example:"3nQ9pL2xV7sK1mR8cT4yB_aZ"`                                     //  epusdt订单号
-	OrderId        string  `json:"order_id" example:"ORD20260416001"`                                               //  客户交易id
-	Amount         float64 `json:"amount" example:"100.0000"`                                                       //  订单金额，按 system.amount_precision 保留小数
-	Currency       string  `json:"currency" example:"CNY"`                                                          //  订单货币类型 CNY USD......
-	ActualAmount   float64 `json:"actual_amount" example:"14.2857"`                                                 //  订单实际需要支付的金额，按 system.amount_precision 保留小数
-	ReceiveAddress string  `json:"receive_address" example:"TTestTronAddress001"`                                   //  收款钱包地址
-	Token          string  `json:"token" example:"USDT"`                                                            // 所属币种 TRX USDT......
-	Status         int     `json:"status" enums:"1,2,3,4" example:"1"`                                              // 订单状态 1=等待支付 2=支付成功 3=已过期 4=等待选择支付网络/币种
-	ExpirationTime int64   `json:"expiration_time" example:"1713264600"`                                            // 过期时间 时间戳
-	PaymentUrl     string  `json:"payment_url" example:"https://pay.example.com/checkout/3nQ9pL2xV7sK1mR8cT4yB_aZ"` // 收银台地址
+	PaymentTerms   *mdb.PaymentTerms `json:"payment_terms,omitempty"`
+	TradeId        string            `json:"trade_id" example:"3nQ9pL2xV7sK1mR8cT4yB_aZ"`                                     //  epusdt订单号
+	OrderId        string            `json:"order_id" example:"ORD20260416001"`                                               //  客户交易id
+	Amount         float64           `json:"amount" example:"100.0000"`                                                       //  订单金额，按 system.amount_precision 保留小数
+	Currency       string            `json:"currency" example:"CNY"`                                                          //  订单货币类型 CNY USD......
+	ActualAmount   float64           `json:"actual_amount" example:"14.2857"`                                                 //  订单实际需要支付的金额，按 system.amount_precision 保留小数
+	ReceiveAddress string            `json:"receive_address" example:"TTestTronAddress001"`                                   //  收款钱包地址
+	Token          string            `json:"token" example:"USDT"`                                                            // 所属币种 TRX USDT......
+	Status         int               `json:"status" enums:"1,2,3,4" example:"1"`                                              // 订单状态 1=等待支付 2=支付成功 3=已过期 4=等待选择支付网络/币种
+	ExpirationTime int64             `json:"expiration_time" example:"1713264600"`                                            // 过期时间 时间戳
+	PaymentUrl     string            `json:"payment_url" example:"https://pay.example.com/checkout/3nQ9pL2xV7sK1mR8cT4yB_aZ"` // 收银台地址
 }
 
 // OrderNotifyResponse 订单异步回调结构体
