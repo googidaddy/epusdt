@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   build-and-sync:
+    # This fork builds the reviewed secure profile locally; upstream publishers stay disabled.
+    if: github.repository == 'GMWalletApp/epusdt'
     name: Build Frontend And Sync src/www
     runs-on: ubuntu-latest
 

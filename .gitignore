@@ -6,3 +6,14 @@ src/*.db-shm
 src/*.db-wal
 .DS_Store
 .env
+
+# Dedicated deployment state belongs outside this checkout.
+/env
+/state/
+/gateway.json
+/ops/secure/*.private.*
+/ops/secure/*.env
+
+# Local Python validation artifacts.
+__pycache__/
+*.pyc

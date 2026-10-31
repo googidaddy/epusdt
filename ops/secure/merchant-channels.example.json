@@ -1,0 +1,44 @@
+{
+  "trc20_channel_config": {
+    "gateway_url": "https://pay.example.com",
+    "pid": "REPLACE_DEDICATED_PID",
+    "secret_key": "REPLACE_WITH_GATEWAY_MERCHANT_SECRET",
+    "service_secret": "REPLACE_WITH_GATEWAY_SERVICE_SECRET",
+    "fixed_payment_intent": true,
+    "order_mode": "transaction",
+    "token": "usdt",
+    "network": "tron",
+    "currency": "cny",
+    "notify_url": "https://shop.example.com/api/v1/payments/notify/epusdt",
+    "return_url": "https://shop.example.com",
+    "quote_policy": {
+      "version": "reviewed-static-v1",
+      "rate": "0.14",
+      "precision": 4,
+      "max_tail": "0.0099",
+      "lifetime_seconds": 900,
+      "recipient": "REPLACE_WITH_OWN_TRC20_ADDRESS"
+    }
+  },
+  "bep20_channel_config": {
+    "gateway_url": "https://pay.example.com",
+    "pid": "REPLACE_DEDICATED_PID",
+    "secret_key": "REPLACE_WITH_GATEWAY_MERCHANT_SECRET",
+    "service_secret": "REPLACE_WITH_GATEWAY_SERVICE_SECRET",
+    "fixed_payment_intent": true,
+    "order_mode": "transaction",
+    "token": "usdt",
+    "network": "binance",
+    "currency": "cny",
+    "notify_url": "https://shop.example.com/api/v1/payments/notify/epusdt",
+    "return_url": "https://shop.example.com",
+    "quote_policy": {
+      "version": "reviewed-static-v1",
+      "rate": "0.14",
+      "precision": 4,
+      "max_tail": "0.0099",
+      "lifetime_seconds": 900,
+      "recipient": "REPLACE_WITH_OWN_BEP20_ADDRESS"
+    }
+  }
+}

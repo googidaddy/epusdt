@@ -1,3 +1,5 @@
+> 本 fork 的独立安全部署使用 [ops/secure 运行手册](ops/secure/README.md) 和 `src/cmd/secure`。下面是上游项目介绍；默认安装器、旧管理后台、latest 镜像及成功回调流程不是本次部署入口。当前本地实现已验收，生产仍待现场配置与验证。
+
 # Epusdt — Easy Payment USDT
 
 <p align="center">

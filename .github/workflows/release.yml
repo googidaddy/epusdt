@@ -23,6 +23,8 @@ concurrency:
 
 jobs:
   goreleaser:
+    # This fork builds the reviewed secure profile locally; upstream publishers stay disabled.
+    if: github.repository == 'GMWalletApp/epusdt'
     name: Build And Publish Binaries
     runs-on: ubuntu-latest
 
