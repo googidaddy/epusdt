@@ -155,10 +155,10 @@ func TestSecureHeaderEndpointValidationDoesNotPartiallyConfigure(t *testing.T) {
 	t.Cleanup(func() { secureEndpoints, secureBSCHeaderEndpoint, httpClient = oldEndpoints, oldHeader, oldHTTP })
 	secureEndpoints = nil
 	secureBSCHeaderEndpoint = ""
-	if err := ConfigureSecureRPC("https://tron.example.com", "https://logs.example.com/key", "wss://logs.example.com/key", "http://headers.example.com"); err == nil || secureEndpoints != nil || secureBSCHeaderEndpoint != "" {
+	if err := ConfigureSecureRPC([]string{"https://tron.example.com"}, []string{"https://logs.example.com/key"}, "wss://logs.example.com/key", "http://headers.example.com"); err == nil || secureEndpoints != nil || secureBSCHeaderEndpoint != "" {
 		t.Fatal("invalid header endpoint partially enabled secure RPC")
 	}
-	if err := ConfigureSecureRPC("https://tron.example.com", "https://logs.example.com/key", "wss://logs.example.com/key", "https://headers.example.com"); err != nil {
+	if err := ConfigureSecureRPC([]string{"https://tron.example.com"}, []string{"https://logs.example.com/key"}, "wss://logs.example.com/key", "https://headers.example.com"); err != nil {
 		t.Fatal(err)
 	}
 	if secureBSCHeaderEndpoint != "https://headers.example.com" || !secureEndpoints[secureBSCHeaderEndpoint] {

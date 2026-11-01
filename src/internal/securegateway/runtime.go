@@ -162,7 +162,22 @@ func SeedPolicy(c Config) error {
 				}
 			}
 		}
-		nodes := []mdb.RpcNode{{Network: mdb.NetworkTron, Url: c.TronURL, ApiKey: c.TronAPIKey, Type: mdb.RpcNodeTypeHttp}, {Network: mdb.NetworkBsc, Url: c.BscHTTP, Type: mdb.RpcNodeTypeHttp}, {Network: mdb.NetworkBsc, Url: c.BscWSS, Type: mdb.RpcNodeTypeWs}}
+		// Primary endpoint first so it keeps its API key and wins selection while
+		// healthy; reviewed fallbacks follow and are only used after the gateway
+		// marks the primary as failing. Fallbacks carry no API key: their
+		// credentials must be embedded in the URL (e.g. a provider path token).
+		nodes := make([]mdb.RpcNode, 0, len(c.TronFallbacks)+len(c.BscFallbacks)+3)
+		for i, tronURL := range c.TronURLs() {
+			node := mdb.RpcNode{Network: mdb.NetworkTron, Url: tronURL, Type: mdb.RpcNodeTypeHttp}
+			if i == 0 {
+				node.ApiKey = c.TronAPIKey
+			}
+			nodes = append(nodes, node)
+		}
+		for _, bscURL := range c.BscHTTPSURLs() {
+			nodes = append(nodes, mdb.RpcNode{Network: mdb.NetworkBsc, Url: bscURL, Type: mdb.RpcNodeTypeHttp})
+		}
+		nodes = append(nodes, mdb.RpcNode{Network: mdb.NetworkBsc, Url: c.BscWSS, Type: mdb.RpcNodeTypeWs})
 		for _, node := range nodes {
 			var existing mdb.RpcNode
 			if tx.Where("network = ? AND url = ?", node.Network, node.Url).Limit(1).Find(&existing).Error != nil {
@@ -221,7 +236,7 @@ func Serve(ctx context.Context, c Config) error {
 	if err != nil {
 		return err
 	}
-	if err := task.ConfigureSecureRPC(c.TronURL, c.BscHTTP, c.BscWSS, c.BscHeaderHTTP); err != nil {
+	if err := task.ConfigureSecureRPC(c.TronURLs(), c.BscHTTPSURLs(), c.BscWSS, c.BscHeaderHTTP); err != nil {
 		return err
 	}
 	go task.StartTronBlockScannerListener()

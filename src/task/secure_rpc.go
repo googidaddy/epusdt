@@ -80,14 +80,35 @@ func safeRPCError(err error) error {
 }
 
 // ConfigureSecureRPC must be called once, before starting scanner goroutines.
-func ConfigureSecureRPC(tron, bscHTTP, bscWSS, bscHeaderHTTP string) error {
-	endpoints := []string{tron + "/walletsolidity/getnowblock", tron + "/walletsolidity/getblockbynum", tron + "/wallet/gettransactioninfobyblocknum"}
+//
+// Both lists are ordered: index 0 is the operator's primary endpoint and the
+// rest are reviewed failovers. The allowlist is the union of exactly these
+// values — nothing is derived at runtime from rpc_nodes, so a database row
+// cannot widen the SSRF surface on its own.
+func ConfigureSecureRPC(tron []string, bscHTTP []string, bscWSS, bscHeaderHTTP string) error {
+	if len(tron) == 0 || len(bscHTTP) == 0 {
+		return securehttp.ErrDenied
+	}
+	endpoints := make([]string, 0, len(tron)*3)
+	for _, base := range tron {
+		if strings.TrimSpace(base) == "" {
+			return securehttp.ErrDenied
+		}
+		endpoints = append(endpoints,
+			base+"/walletsolidity/getnowblock",
+			base+"/walletsolidity/getblockbynum",
+			base+"/wallet/gettransactioninfobyblocknum")
+	}
 	client, err := securehttp.Client(endpoints...)
 	if err != nil {
 		return err
 	}
-	if _, err := securehttp.Endpoint(bscHTTP); err != nil {
-		return err
+	allowed := make(map[string]bool, len(bscHTTP)+2)
+	for _, raw := range bscHTTP {
+		if _, err := securehttp.Endpoint(raw); err != nil {
+			return err
+		}
+		allowed[raw] = true
 	}
 	ws, err := url.Parse(bscWSS)
 	if err != nil || ws.Scheme != "wss" {
@@ -97,7 +118,7 @@ func ConfigureSecureRPC(tron, bscHTTP, bscWSS, bscHeaderHTTP string) error {
 	if _, err := securehttp.Endpoint(ws.String()); err != nil {
 		return err
 	}
-	allowed := map[string]bool{bscHTTP: true, bscWSS: true}
+	allowed[bscWSS] = true
 	if bscHeaderHTTP != "" {
 		if _, err := securehttp.Endpoint(bscHeaderHTTP); err != nil {
 			return err

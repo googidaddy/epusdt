@@ -47,7 +47,7 @@ func TestBSCProviderReadOnlyPreflight(t *testing.T) {
 	}
 	oldEndpoints, oldHeader, oldHTTP := secureEndpoints, secureBSCHeaderEndpoint, httpClient
 	t.Cleanup(func() { secureEndpoints, secureBSCHeaderEndpoint, httpClient = oldEndpoints, oldHeader, oldHTTP })
-	if ConfigureSecureRPC(config.Tron, config.HTTP, config.WSS, config.Headers) != nil {
+	if ConfigureSecureRPC([]string{config.Tron}, []string{config.HTTP}, config.WSS, config.Headers) != nil {
 		t.Fatal("invalid provider configuration")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)

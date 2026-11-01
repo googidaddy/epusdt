@@ -33,6 +33,12 @@ type Config struct {
 	DataDir        string `json:"data_dir"`
 	RuntimeDir     string `json:"runtime_dir"`
 	SecurityDir    string `json:"security_dir"`
+	// Optional failover endpoints. The primary endpoints above stay authoritative;
+	// these are only used after the gateway marks a node as failing. Every entry
+	// must pass the same securehttp.Endpoint check, so the SSRF allowlist only
+	// grows by explicitly reviewed operator values.
+	TronFallbacks []string `json:"tron_url_fallbacks,omitempty"`
+	BscFallbacks  []string `json:"bsc_https_fallbacks,omitempty"`
 }
 
 func ReadConfig(path string) (Config, error) {
@@ -116,5 +122,50 @@ func (c Config) Validate() error {
 		}
 		seen[dir] = true
 	}
+	// Failover endpoints are held to the same transport rules as the primary ones
+	// (public HTTPS, no query/fragment). A path is allowed here because providers
+	// such as Chainstack embed the credential in the path; a trailing slash is not,
+	// because the scanner appends "/walletsolidity/..." to the base.
+	for _, raw := range c.TronFallbacks {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || trimmed == c.TronURL || strings.HasSuffix(trimmed, "/") {
+			return invalid
+		}
+		if _, err := securehttp.Endpoint(trimmed); err != nil {
+			return invalid
+		}
+	}
+	for _, raw := range c.BscFallbacks {
+		if strings.TrimSpace(raw) == "" || raw == c.BscHTTP || raw == c.BscHeaderHTTP || raw == c.BscWSS {
+			return invalid
+		}
+		if _, err := securehttp.Endpoint(raw); err != nil {
+			return invalid
+		}
+	}
 	return nil
+}
+
+// TronURLs returns the primary TRON endpoint followed by any reviewed fallbacks.
+func (c Config) TronURLs() []string {
+	out := make([]string, 0, len(c.TronFallbacks)+1)
+	out = append(out, c.TronURL)
+	for _, raw := range c.TronFallbacks {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// BscHTTPSURLs returns the primary BSC HTTP endpoint followed by any reviewed fallbacks.
+func (c Config) BscHTTPSURLs() []string {
+	out := make([]string, 0, len(c.BscFallbacks)+1)
+	out = append(out, c.BscHTTP)
+	for _, raw := range c.BscFallbacks {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
