@@ -38,7 +38,7 @@ export EPUSDT_IMAGE=dujiao-epusdt:REPLACE_FULL_REVIEWED_COMMIT
 sh ops/secure/build.sh
 ```
 
-`build.sh` 拒绝 dirty Git 和非完整 SHA 标签，仅构建、不 pull、不切服务。Dockerfile 固定 Go 1.26.9 的基础镜像 digest、`-mod=readonly`、低并发；scratch 仅含 binary / CA。记录实际 image ID 和 revision，本地镜像未必有 registry RepoDigest。fork 已禁用自动沿用上游发布 / www 同步。
+`build.sh` 拒绝 dirty Git 和非完整 SHA 标签，仅构建、不 pull、不切服务。Dockerfile 固定 Go 1.26.10 的基础镜像 digest（GO-2026-6809 的修复下限）、`-mod=readonly`、低并发；scratch 仅含 binary / CA。记录实际 image ID 和 revision，本地镜像未必有 registry RepoDigest。fork 已禁用自动沿用上游发布 / www 同步。
 
 4. 创建四目录，将 [gateway.example.json](gateway.example.json) 私下填写为 `config/gateway.json`。独立随机 `merchant_secret` / `service_secret` 至少 32 字节；`pid` 专用且稳定；服务域名、RPC 与地址均核实。两个地址和静态汇率分别与商城渠道校对。不要将配置放入命令参数、聊天、日志或 Git；不要覆盖已填私有配置表。
 5. 在 checkout 外建立只含下面三项、0600 的 Compose env 文件；它不含 RPC / API secret：
