@@ -126,6 +126,7 @@ func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address
 			continue
 		}
 
+		loopStarted := time.Now()
 		err = runEvmBackfillLoop(ctx, client, network, logPrefix, node, query, isWatchedRecipient)
 		closeClient()
 
@@ -133,6 +134,13 @@ func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address
 			return
 		}
 		if err != nil {
+			// runEvmBackfillLoop only returns when it stops, so the reset below the
+			// success branch never runs for a long-lived scanner. Without this, a
+			// backoff grown during startup is inherited forever and a single blip
+			// hours later still costs the full 60s of blind scanning.
+			if time.Since(loopStarted) >= time.Minute {
+				failWait = 2 * time.Second
+			}
 			log.Sugar.Warnf("%s backfill loop stopped: %v, retry in %s", logPrefix, safeRPCError(err), failWait)
 			if recordEvmNodeFailure(logPrefix, network, node, safeRPCError(err).Error()) {
 				return
