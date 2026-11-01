@@ -134,7 +134,7 @@ python3 ops/secure/restore-prepare.py --snapshot /opt/private-restore/snapshot -
 
 工作区新增 `.github/workflows/secure-checks.yml`，覆盖完整 Go / vet、关键包 race、secure 入口 govulncheck v1.8.0、带真实 age 的合成备份，以及 secure 镜像构建和缺配置拒绝启动检查。它仅用 GitHub 托管临时资源、contents:read，不发布镜像、不读取私有文件或连接 RN；旧上游发布限制保持。
 
-当前尚未提交 / 推送，未在 GitHub 执行。工作流静态检查不能代替完整运行成功，首次正式发布前须检查对应 SHA 的结果；RN 仍按自有 fork clean SHA 受限构建。
+**2026-11-01 状态**：已提交、已推送、GitHub Actions 已跑通（两个 PR 全绿，含首跑时抓到的 GO-2026-6809 修复）。工作流只做检查、不发布镜像；网关镜像仍按自有 fork 的 clean SHA 在 RN 本地构建。
 
 ## 本地检查入口
 
