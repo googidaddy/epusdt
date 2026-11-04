@@ -37,8 +37,8 @@ const (
 func CheckApiSign() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(ctx echo.Context) error {
-			params, err := io.ReadAll(ctx.Request().Body)
-			if err != nil {
+			params, err := io.ReadAll(io.LimitReader(ctx.Request().Body, (64<<10)+1))
+			if err != nil || len(params) > 64<<10 {
 				return constant.SignatureErr
 			}
 			// Rewind the body for downstream bindings regardless of outcome.

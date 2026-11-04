@@ -42,7 +42,7 @@ func runBscListener(contracts []common.Address) {
 	ctx, cancel := chainEnabledWatchdog(mdb.NetworkBsc, "[BSC-WS]", chainTokenFingerprint(mdb.NetworkBsc))
 	defer cancel()
 
-	wallets, err := data.GetAvailableWalletAddressByNetwork(mdb.NetworkBsc)
+	wallets, err := data.GetScanWallets(mdb.NetworkBsc)
 	if err != nil {
 		log.Sugar.Errorf("[BSC-WS] Failed to get wallet addresses: %v", err)
 		return
@@ -61,7 +61,7 @@ func runBscListener(contracts []common.Address) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				w, err := data.GetAvailableWalletAddressByNetwork(mdb.NetworkBsc)
+				w, err := data.GetScanWallets(mdb.NetworkBsc)
 				if err != nil {
 					log.Sugar.Warnf("[BSC-WS] refresh wallet addresses: %v", err)
 					continue
@@ -101,14 +101,26 @@ func runBscListener(contracts []common.Address) {
 		}
 
 		var blockTsMs int64
-		header, err := client.HeaderByNumber(context.Background(), big.NewInt(int64(vLog.BlockNumber)))
+		headerCtx, cancelHeader := context.WithTimeout(ctx, 10*time.Second)
+		header, err := client.HeaderByNumber(headerCtx, big.NewInt(int64(vLog.BlockNumber)))
+		cancelHeader()
 		if err != nil {
 			data.RecordRpcFailure(mdb.NetworkBsc)
-			log.Sugar.Warnf("[BSC-WS] HeaderByNumber block=%d: %v, using local time", vLog.BlockNumber, err)
-			blockTsMs = time.Now().UnixMilli()
+			log.Sugar.Warnf("[BSC-WS] HeaderByNumber block=%d: %v; timestamp remains unknown", vLog.BlockNumber, err)
 		} else {
 			data.RecordRpcSuccess(mdb.NetworkBsc)
-			blockTsMs = int64(header.Time) * 1000
+			if header != nil && header.Time > 0 && header.Time <= uint64(^uint64(0)>>1)/1000 {
+				blockTsMs = int64(header.Time) * 1000
+			}
+		}
+		handled, err := service.RecordFixedEVMLog(mdb.NetworkBsc, vLog, blockTsMs)
+		if err != nil {
+			log.Sugar.Errorf("[BSC-WS] persist candidate: %v; reconnect and recover through backfill", err)
+			cancel()
+			return
+		}
+		if handled || vLog.Removed || blockTsMs == 0 {
+			return
 		}
 
 		service.TryProcessEvmERC20Transfer(mdb.NetworkBsc, vLog.Address, toAddr, amount, vLog.TxHash.Hex(), blockTsMs)

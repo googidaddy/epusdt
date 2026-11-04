@@ -82,7 +82,7 @@ func TestTronScannerStopsOnHistoricalBlockFetchError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/wallet/getnowblock":
+		case "/walletsolidity/getnowblock":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"block_header": map[string]interface{}{
 					"raw_data": map[string]interface{}{
@@ -92,7 +92,7 @@ func TestTronScannerStopsOnHistoricalBlockFetchError(t *testing.T) {
 				},
 				"transactions": []interface{}{},
 			})
-		case "/wallet/getblockbynum":
+		case "/walletsolidity/getblockbynum":
 			http.Error(w, "temporary", http.StatusBadGateway)
 		default:
 			http.NotFound(w, r)
@@ -118,7 +118,7 @@ func TestTronRPCRecordsRuntimeStats(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/wallet/getnowblock":
+		case "/walletsolidity/getnowblock":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"block_header": map[string]interface{}{
 					"raw_data": map[string]interface{}{
@@ -128,7 +128,7 @@ func TestTronRPCRecordsRuntimeStats(t *testing.T) {
 				},
 				"transactions": []interface{}{},
 			})
-		case "/wallet/getblockbynum":
+		case "/walletsolidity/getblockbynum":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"block_header": map[string]interface{}{
 					"raw_data": map[string]interface{}{

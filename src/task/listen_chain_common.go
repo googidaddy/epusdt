@@ -108,7 +108,7 @@ func chainWalletFingerprint(network string) string {
 }
 
 func loadEvmRecipientTopics(network, logPrefix string) []common.Hash {
-	wallets, err := data.GetAvailableWalletAddressByNetwork(network)
+	wallets, err := data.GetScanWallets(network)
 	if err != nil {
 		if logPrefix != "" {
 			log.Sugar.Warnf("%s load wallet addresses: %v", logPrefix, err)

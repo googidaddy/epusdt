@@ -41,13 +41,13 @@ func runEvmWsLogListener(ctx context.Context, network string, logPrefix string, 
 		}
 
 		dialCtx, cancelDial := context.WithTimeout(ctx, evmNodeDialTimeout)
-		client, err := ethclient.DialContext(dialCtx, wsURL)
+		client, err := dialEVM(dialCtx, wsURL)
 		cancelDial()
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Sugar.Warnf("%s dial: %v, retry in %s", logPrefix, err, failWait)
+			log.Sugar.Warnf("%s dial: %v, retry in %s", logPrefix, safeRPCError(err), failWait)
 			if recordEvmNodeFailure(logPrefix, network, node, "dial") {
 				return
 			}
@@ -65,7 +65,7 @@ func runEvmWsLogListener(ctx context.Context, network string, logPrefix string, 
 			if ctx.Err() != nil {
 				return
 			}
-			log.Sugar.Warnf("%s subscribe: %v, retry in %s", logPrefix, err, failWait)
+			log.Sugar.Warnf("%s subscribe: %v, retry in %s", logPrefix, safeRPCError(err), failWait)
 			if recordEvmNodeFailure(logPrefix, network, node, "subscribe") {
 				return
 			}
@@ -139,7 +139,7 @@ func recvLoop(ctx context.Context, client *ethclient.Client, sub ethereum.Subscr
 			}
 		case err := <-sub.Err():
 			if err != nil {
-				log.Sugar.Warnf("%s subscription error: %v, reconnecting", logPrefix, err)
+				log.Sugar.Warnf("%s subscription error: %v, reconnecting", logPrefix, safeRPCError(err))
 				return fmt.Errorf("subscription error")
 			} else {
 				log.Sugar.Warnf("%s subscription closed, reconnecting", logPrefix)
@@ -184,7 +184,7 @@ func recordEvmLatestHeader(ctx context.Context, network string, logPrefix string
 			return false
 		}
 		data.RecordRpcFailure(network)
-		log.Sugar.Warnf("%s latest header stats failed: %v", logPrefix, err)
+		log.Sugar.Warnf("%s latest header stats failed: %v", logPrefix, safeRPCError(err))
 		return false
 	}
 	data.RecordRpcSuccess(network)

@@ -1,0 +1,19 @@
+{
+  "listen": "0.0.0.0:8080",
+  "public_host": "pay.example.com",
+  "pid": "REPLACE_DEDICATED_PID",
+  "merchant_secret": "REPLACE_WITH_RANDOM_INDEPENDENT_SECRET",
+  "service_secret": "REPLACE_WITH_ANOTHER_RANDOM_SECRET",
+  "notify_url": "https://shop.example.com/api/v1/payments/notify/epusdt",
+  "tron_url": "https://api.trongrid.io",
+  "tron_api_key": "REPLACE_PRIVATELY",
+  "bsc_https": "https://bnb-mainnet.g.alchemy.com/v2/REPLACE_PRIVATELY",
+  "bsc_header_https": "https://bsc-dataseed.bnbchain.org",
+  "bsc_wss": "wss://bnb-mainnet.g.alchemy.com/v2/REPLACE_PRIVATELY",
+  "tron_recipient": "REPLACE_WITH_OWN_ADDRESS",
+  "bsc_recipient": "REPLACE_WITH_OWN_ADDRESS",
+  "quote_rate_usdt_per_cny": "0.14",
+  "data_dir": "/data",
+  "runtime_dir": "/runtime",
+  "security_dir": "/security"
+}

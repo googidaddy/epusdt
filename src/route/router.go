@@ -81,6 +81,8 @@ func RegisterRoute(e *echo.Echo) {
 	// that is completed later by /pay/switch-network or routed to OkPay.
 	gmpayV1 := paymentRoute.Group("/gmpay/v1")
 	gmpayV1.POST("/order/create-transaction", comm.Ctrl.CreateTransaction, middleware.CheckApiSign())
+	gmpayV1.POST("/order/transfer-candidates", comm.Ctrl.PaymentCandidates, middleware.CheckApiSign())
+	gmpayV1.POST("/order/transfer-candidates/ack", comm.Ctrl.AckPaymentCandidates, middleware.CheckApiSign())
 	gmpayV1.GET("/config", comm.Ctrl.GetPublicConfig)
 
 	// okpay v1 routes

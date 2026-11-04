@@ -1,0 +1,53 @@
+name: dujiao-epusdt
+services:
+  gateway:
+    image: ${EPUSDT_IMAGE:?set an image tag built from the reviewed source}
+    user: "10001:10001"
+    init: true
+    read_only: true
+    restart: "on-failure:3"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 0.50
+    stop_grace_period: 20s
+    environment:
+      GOMAXPROCS: "1"
+      GOMEMLIMIT: 300MiB
+      TZ: UTC
+    ports:
+      - "127.0.0.1:${EPUSDT_PORT:?set the prechecked loopback port}:8080"
+    volumes:
+      - type: bind
+        source: ${EPUSDT_STATE:?set an absolute path outside the checkout}/config
+        target: /config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EPUSDT_STATE}/data
+        target: /data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EPUSDT_STATE}/runtime
+        target: /runtime
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EPUSDT_STATE}/security
+        target: /security
+        bind: {create_host_path: false}
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700"]
+    networks: [gateway]
+    healthcheck:
+      test: ["CMD", "/epusdt", "-mode", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: local
+      options: {max-size: "10m", max-file: "3"}
+networks:
+  gateway:
+    driver: bridge

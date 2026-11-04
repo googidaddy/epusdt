@@ -1,0 +1,17 @@
+**
+!src/
+!src/**
+src/www/
+src/.env*
+src/**/.env*
+src/**/env
+src/**/private/
+src/**/backups/
+src/**/node_modules/
+src/**/runtime/
+src/**/*.db
+src/**/*.db-*
+src/**/*.sqlite*
+src/**/*.log
+src/dist/
+src/**/gateway.json

@@ -29,6 +29,7 @@ func apiKeyFromContext(ctx echo.Context) *mdb.ApiKey {
 // @Summary      Create transaction
 // @Description  Create a payment transaction order. Accepts JSON body (application/json) or form-encoded body (application/x-www-form-urlencoded).
 // @Description  GMPay may omit both token and network to create a status=4 placeholder order; EPay submit.php can also create one when neither request parameters nor database defaults provide token/network. Supplying only one of token/network is invalid.
+// @Description  fixed_payment_intent=true opts into fixed USDT tron/binance terms and idempotent same-merchant retries; include the boolean field in the HMAC signature. This does not enable merchant-side chain verification.
 // @Description  payment_type is optional for GMPay. If it is sent, it is a normal signed parameter and must be included when calculating signature.
 // @Description  GMPay signature uses lowercase hexadecimal HMAC-SHA256 with secret_key as the HMAC key. Legacy MD5 signatures are not accepted.
 // @Tags         Payment

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	addressutil "github.com/GMWalletApp/epusdt/util/address"
 	"github.com/GMWalletApp/epusdt/util/constant"
-	"github.com/GMWalletApp/epusdt/util/math"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -74,6 +74,14 @@ func SetManualOrderPaymentValidatorForTest(fn func(*mdb.Orders, string) (string,
 func validateManualOrderPaymentDefault(order *mdb.Orders, blockTransactionID string) (string, error) {
 	if order == nil || order.ID == 0 {
 		return "", fmt.Errorf("order not found")
+	}
+	if err := validatePaymentTerms(order); err != nil {
+		return "", err
+	}
+	if order.PaymentTerms != nil {
+		if err := data.EnsureUniquePaymentOwner(order); err != nil {
+			return "", err
+		}
 	}
 	txID := strings.TrimSpace(blockTransactionID)
 	if txID == "" {
@@ -179,7 +187,7 @@ func validateManualEvmPayment(order *mdb.Orders, txID string) (string, error) {
 		return "", err
 	}
 
-	token, err := data.GetEnabledChainTokenBySymbol(order.Network, order.Token)
+	token, err := paymentTokenForVerification(order)
 	if err != nil {
 		return "", err
 	}
@@ -241,15 +249,21 @@ func validateManualEvmPaymentWithClient(ctx context.Context, client evmChainRead
 	if err != nil {
 		return fmt.Errorf("fetch transaction receipt: %w", err)
 	}
-	if receipt.Status != types.ReceiptStatusSuccessful {
+	if receipt == nil || receipt.Status != types.ReceiptStatusSuccessful {
 		return fmt.Errorf("transaction is not successful")
 	}
-	if receipt.BlockNumber == nil {
+	if receipt.TxHash != txHash {
+		return fmt.Errorf("transaction receipt hash mismatch")
+	}
+	if receipt.BlockNumber == nil || receipt.BlockNumber.Sign() <= 0 {
 		return fmt.Errorf("transaction receipt missing block number")
 	}
 	txHeader, err := client.HeaderByNumber(ctx, receipt.BlockNumber)
 	if err != nil {
 		return fmt.Errorf("fetch transaction block header: %w", err)
+	}
+	if txHeader == nil || txHeader.Number == nil || txHeader.Number.Cmp(receipt.BlockNumber) != 0 || txHeader.Hash() != receipt.BlockHash {
+		return fmt.Errorf("transaction receipt block is not canonical")
 	}
 	if err = ensureEvmTransactionNotBeforeOrder(txHeader.Time, order); err != nil {
 		return err
@@ -271,7 +285,13 @@ func validateManualEvmPaymentWithClient(ctx context.Context, client evmChainRead
 		if item == nil || !strings.EqualFold(item.Address.Hex(), contract.Hex()) {
 			continue
 		}
-		if len(item.Topics) < 3 || item.Topics[0] != erc20TransferEventHash {
+		if item.Removed || item.TxHash != txHash || item.BlockHash != receipt.BlockHash || item.BlockNumber != receipt.BlockNumber.Uint64() || item.TxIndex != receipt.TransactionIndex {
+			continue
+		}
+		if len(item.Topics) != 3 || item.Topics[0] != erc20TransferEventHash || len(item.Data) != 32 {
+			continue
+		}
+		if !bytes.Equal(item.Topics[2].Bytes()[:12], make([]byte, 12)) {
 			continue
 		}
 		if !strings.EqualFold(common.BytesToAddress(item.Topics[2].Bytes()).Hex(), to.Hex()) {
@@ -369,6 +389,15 @@ func ensureEvmTransactionNotBeforeOrder(blockTime uint64, order *mdb.Orders) err
 	if order == nil {
 		return fmt.Errorf("order not found")
 	}
+	if blockTime == 0 || blockTime > math.MaxInt64/1000 {
+		return fmt.Errorf("transaction block timestamp invalid")
+	}
+	if err := validatePaymentWindow(order, int64(blockTime)*1000); err != nil {
+		return err
+	}
+	if order.PaymentTerms != nil {
+		return nil
+	}
 	if int64(blockTime)*1000 < order.CreatedAt.TimestampMilli() {
 		return fmt.Errorf("transaction predates the order")
 	}
@@ -387,6 +416,9 @@ func ensureEvmConfirmations(ctx context.Context, client evmChainReader, network 
 	header, err := client.HeaderByNumber(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("fetch latest block: %w", err)
+	}
+	if header == nil || header.Number == nil || header.Number.Sign() < 0 {
+		return fmt.Errorf("latest block number missing or invalid")
 	}
 	confirmations := new(big.Int).Sub(header.Number, txBlock)
 	confirmations.Add(confirmations, big.NewInt(1))
@@ -489,8 +521,8 @@ func validateManualTronPaymentWithNode(order *mdb.Orders, normalizedTxID string,
 	if strings.TrimSpace(tx.TxID) != "" && !strings.EqualFold(strings.TrimSpace(tx.TxID), normalizedTxID) {
 		return fmt.Errorf("transaction id mismatch")
 	}
-	if len(tx.Ret) > 0 && tx.Ret[0].ContractRet != "" && tx.Ret[0].ContractRet != "SUCCESS" {
-		return fmt.Errorf("transaction is not successful: %s", tx.Ret[0].ContractRet)
+	if len(tx.Ret) != 1 || tx.Ret[0].ContractRet != "SUCCESS" {
+		return fmt.Errorf("transaction success evidence missing or unsuccessful")
 	}
 
 	var info manualTronTxInfo
@@ -499,6 +531,13 @@ func validateManualTronPaymentWithNode(order *mdb.Orders, normalizedTxID string,
 	}
 	if info.BlockNumber <= 0 {
 		return fmt.Errorf("transaction is not confirmed")
+	}
+	if !strings.EqualFold(strings.TrimSpace(info.ID), normalizedTxID) {
+		return fmt.Errorf("transaction info id mismatch")
+	}
+	// Native transfers can omit the VM receipt result; token transfers cannot.
+	if !strings.EqualFold(strings.TrimSpace(order.Token), "TRX") && info.Receipt.Result != "SUCCESS" {
+		return fmt.Errorf("token transaction success receipt missing or unsuccessful")
 	}
 	if info.Receipt.Result != "" && info.Receipt.Result != "SUCCESS" {
 		return fmt.Errorf("transaction is not successful: %s", info.Receipt.Result)
@@ -509,7 +548,10 @@ func validateManualTronPaymentWithNode(order *mdb.Orders, normalizedTxID string,
 	if info.BlockTimeStamp <= 0 {
 		return fmt.Errorf("transaction block timestamp missing")
 	}
-	if info.BlockTimeStamp < order.CreatedAt.TimestampMilli() {
+	if err := validatePaymentWindow(order, info.BlockTimeStamp); err != nil {
+		return err
+	}
+	if order.PaymentTerms == nil && info.BlockTimeStamp < order.CreatedAt.TimestampMilli() {
 		return fmt.Errorf("transaction predates the order")
 	}
 
@@ -537,7 +579,7 @@ func validateManualTronNativeTransfer(order *mdb.Orders, tx *manualTronTransacti
 	if err != nil {
 		return fmt.Errorf("invalid TRX recipient address: %w", err)
 	}
-	if !strings.EqualFold(toAddr, order.ReceiveAddress) {
+	if toAddr != order.ReceiveAddress {
 		return fmt.Errorf("transaction recipient mismatch")
 	}
 	if !amountMatchesRaw(order.ActualAmount, big.NewInt(val.Amount), 6) {
@@ -547,7 +589,7 @@ func validateManualTronNativeTransfer(order *mdb.Orders, tx *manualTronTransacti
 }
 
 func validateManualTronTRC20Transfer(order *mdb.Orders, tx *manualTronTransaction, info *manualTronTxInfo) error {
-	token, err := data.GetEnabledChainTokenBySymbol(mdb.NetworkTron, order.Token)
+	token, err := paymentTokenForVerification(order)
 	if err != nil {
 		return err
 	}
@@ -579,7 +621,7 @@ func validateManualTronTRC20TransferEvent(order *mdb.Orders, info *manualTronTxI
 		if err != nil || eventContractHex != contractHex {
 			continue
 		}
-		if len(event.Topics) < 3 || normalizeEventTopic(event.Topics[0]) != transferTopic {
+		if len(event.Topics) != 3 || normalizeEventTopic(event.Topics[0]) != transferTopic {
 			continue
 		}
 		eventToHex, err := tronTopicAddressToHex(event.Topics[2])
@@ -1030,23 +1072,21 @@ func ensureSolanaConfirmationsWithRPC(network, sig string, rpcURL string) error 
 }
 
 func amountMatchesRaw(expected float64, rawAmount *big.Int, decimals int) bool {
-	if rawAmount == nil || rawAmount.Sign() <= 0 {
+	if rawAmount == nil || rawAmount.Sign() <= 0 || decimals < 0 || decimals > 255 || !validPaymentAmount(expected) {
 		return false
 	}
-	if decimals < 0 {
-		decimals = 0
-	}
-	actual := decimal.NewFromBigInt(rawAmount, -int32(decimals))
-	return roundedAmount(expected).Equal(actual.Round(int32(data.GetAmountPrecision())))
+	// Display precision must never round an underpayment into a settlement.
+	// Until orders store integer snapshots, preserve their persisted decimal value.
+	expectedRaw := decimal.NewFromFloat(expected).Shift(int32(decimals))
+	return expectedRaw.Equal(decimal.NewFromBigInt(rawAmount, 0))
 }
 
 func amountMatchesFloat(expected, actual float64) bool {
-	return roundedAmount(expected).Equal(roundedAmount(actual))
+	return validPaymentAmount(expected) && validPaymentAmount(actual) && decimal.NewFromFloat(expected).Equal(decimal.NewFromFloat(actual))
 }
 
-func roundedAmount(amount float64) decimal.Decimal {
-	precision := data.GetAmountPrecision()
-	return decimal.NewFromFloat(math.MustParsePrecFloat64(amount, precision)).Round(int32(precision))
+func validPaymentAmount(amount float64) bool {
+	return amount > 0 && !math.IsNaN(amount) && !math.IsInf(amount, 0)
 }
 
 func tronHexToAddress(hexAddr string) (string, error) {
@@ -1110,6 +1150,9 @@ func tronTopicAddressToHex(topic string) (string, error) {
 	if len(topic) != 64 {
 		return "", fmt.Errorf("invalid TRON event address topic length")
 	}
+	if topic[:24] != strings.Repeat("0", 24) {
+		return "", fmt.Errorf("invalid TRON event address padding")
+	}
 	if _, err := hex.DecodeString(topic); err != nil {
 		return "", err
 	}
@@ -1118,11 +1161,8 @@ func tronTopicAddressToHex(topic string) (string, error) {
 
 func tronEventDataAmount(data string) (*big.Int, error) {
 	data = normalizeEventTopic(data)
-	if data == "" {
-		return nil, fmt.Errorf("empty event data")
-	}
-	if len(data)%2 != 0 {
-		return nil, fmt.Errorf("odd-length event data")
+	if len(data) != 64 {
+		return nil, fmt.Errorf("invalid TRON transfer amount word length")
 	}
 	raw, err := hex.DecodeString(data)
 	if err != nil {

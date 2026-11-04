@@ -11,6 +11,8 @@ env:
 
 jobs:
   push-docker-hub:
+    # This fork builds the reviewed secure profile locally; upstream publishers stay disabled.
+    if: github.repository == 'GMWalletApp/epusdt'
     runs-on: ubuntu-latest
 
     steps:

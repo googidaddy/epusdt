@@ -4,15 +4,17 @@ import "github.com/gookit/validate"
 
 // CreateTransactionRequest 创建交易请求
 type CreateTransactionRequest struct {
-	OrderId     string  `json:"order_id" form:"order_id" validate:"required|maxLen:32" example:"ORD20260416001"`
-	Currency    string  `json:"currency" form:"currency" validate:"required" example:"cny"` // 法币 如：cny
-	Token       string  `json:"token" form:"token" example:"usdt"`                          // 币种 如：usdt、ton；可与 network 同时缺省创建占位订单
-	Network     string  `json:"network" form:"network" example:"tron"`                      // 网络 如：ton、tron、aptos；可与 token 同时缺省创建占位订单
-	Amount      float64 `json:"amount" form:"amount" validate:"required|isFloat|gt:0.01" example:"100.00"`
-	NotifyUrl   string  `json:"notify_url" form:"notify_url" validate:"required" example:"https://example.com/notify"`
-	Signature   string  `json:"signature" form:"signature" validate:"required" example:"6f874b1919d95081835e2809b620e354a5866f5a6dbb2e432d1627f1eb10059d"`
-	RedirectUrl string  `json:"redirect_url" form:"redirect_url" example:"https://example.com/success"`
-	Name        string  `json:"name" form:"name" example:"VIP月卡"`
+	PaymentExpiresAtMs int64   `json:"payment_expires_at_ms,omitempty" form:"payment_expires_at_ms"`
+	FixedPaymentIntent bool    `json:"fixed_payment_intent" form:"fixed_payment_intent"`
+	OrderId            string  `json:"order_id" form:"order_id" validate:"required|maxLen:32" example:"ORD20260416001"`
+	Currency           string  `json:"currency" form:"currency" validate:"required" example:"cny"` // 法币 如：cny
+	Token              string  `json:"token" form:"token" example:"usdt"`                          // 币种 如：usdt、ton；可与 network 同时缺省创建占位订单
+	Network            string  `json:"network" form:"network" example:"tron"`                      // 网络 如：ton、tron、aptos；可与 token 同时缺省创建占位订单
+	Amount             float64 `json:"amount" form:"amount" validate:"required|isFloat|gt:0.01" example:"100.00"`
+	NotifyUrl          string  `json:"notify_url" form:"notify_url" validate:"required" example:"https://example.com/notify"`
+	Signature          string  `json:"signature" form:"signature" validate:"required" example:"6f874b1919d95081835e2809b620e354a5866f5a6dbb2e432d1627f1eb10059d"`
+	RedirectUrl        string  `json:"redirect_url" form:"redirect_url" example:"https://example.com/success"`
+	Name               string  `json:"name" form:"name" example:"VIP月卡"`
 	// PaymentType is a compatibility flag, not a gateway selector. Only
 	// "Epay" (case-insensitive) switches callback format to legacy EPay;
 	// empty or any other value is stored as "Gmpay" and uses GMPay JSON.

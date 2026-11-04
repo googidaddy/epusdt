@@ -1,0 +1,56 @@
+# Render ONLY this dedicated service virtual host. Keep the shop/Alipay configuration intact.
+# Replace the example host, certificate paths and 18081 with reviewed values.
+# Enable Cloudflare Authenticated Origin Pulls first. A missing CA/certificate must fail nginx -t.
+#
+# There is no management virtual host and no /admin route. Operator access is an
+# SSH tunnel to the loopback listener:
+#   ssh -L 18081:127.0.0.1:18081 RN
+#   curl -s http://127.0.0.1:18081/status
+# Nothing outside the four service paths is proxied, so /status and /healthz stay
+# unreachable from the internet even though the process listens on 0.0.0.0.
+limit_req_zone $binary_remote_addr zone=epusdt_service:1m rate=10r/s;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name pay.example.com;
+    access_log off;
+    add_header Cache-Control "no-store" always;
+    # No service requests or authentication data may travel over plain HTTP.
+    return 404;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name pay.example.com;
+    ssl_certificate /etc/nginx/ssl/REPLACE-origin.pem;
+    ssl_certificate_key /etc/nginx/ssl/REPLACE-origin.key;
+    ssl_client_certificate /etc/nginx/ssl/REPLACE-cloudflare-origin-pull-ca.pem;
+    ssl_verify_client on;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    if ($host != pay.example.com) { return 421; }
+    if ($ssl_server_name != pay.example.com) { return 421; }
+    client_max_body_size 64k;
+    client_body_timeout 10s;
+    limit_req_status 429;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Cache-Control "no-store" always;
+    access_log off;
+    proxy_cache off;
+
+    location ~ ^/payments/gmpay/v1/order/(create-transaction|transfer-candidates|transfer-candidates/ack|scan-health)$ {
+        if ($request_method != POST) { return 405; }
+        limit_req zone=epusdt_service burst=20 nodelay;
+        proxy_pass http://127.0.0.1:18081;
+        proxy_set_header Host pay.example.com;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Connection "";
+        proxy_http_version 1.1;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 25s;
+        proxy_send_timeout 15s;
+    }
+    location / { return 404; }
+}

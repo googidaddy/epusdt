@@ -25,6 +25,5 @@ func DBInit() error {
 		}
 	}
 
-	MdbTableInit()
-	return nil
+	return MdbTableInit()
 }
