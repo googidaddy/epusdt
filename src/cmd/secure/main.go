@@ -31,6 +31,11 @@ func main() {
 		}
 		return
 	}
+	// Print the revision before anything else can fail, so an operator reading
+	// `docker logs` can tell which source snapshot is running — including on the
+	// fail-closed path when the private configuration is missing. This also
+	// keeps the linker from dropping the symbol that -X writes to.
+	fmt.Fprintf(os.Stderr, "[build] secure gateway revision=%s\n", securegateway.BuildRevision())
 	c, err := securegateway.ReadConfig(*path)
 	if err != nil {
 		fail(err)

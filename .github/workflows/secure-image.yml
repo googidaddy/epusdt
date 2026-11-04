@@ -58,6 +58,9 @@ jobs:
           docker create --name image-probe "$IMAGE:$TAG" >/dev/null
           docker cp image-probe:/epusdt /tmp/epusdt
           docker rm image-probe >/dev/null
+          # -X 曾指向未被链接的 config 包而静默失效，镜像因此不带版本号。这里守住。
+          grep -qa "${{ github.sha }}" /tmp/epusdt \
+            || { echo "::error::binary does not embed the source revision"; exit 1; }
           BIN_SHA=$(sha256sum /tmp/epusdt | cut -d' ' -f1)
           echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
           {

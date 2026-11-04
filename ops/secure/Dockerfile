@@ -5,7 +5,7 @@ COPY src/go.mod src/go.sum ./
 RUN go mod download
 COPY src/ ./
 ARG SOURCE_REVISION=uncommitted-local-validation
-RUN go build -p=1 -trimpath -buildvcs=false -ldflags="-s -w -X github.com/GMWalletApp/epusdt/config.BuildCommit=${SOURCE_REVISION}" -o /out/epusdt ./cmd/secure
+RUN go build -p=1 -trimpath -buildvcs=false -ldflags="-s -w -X github.com/GMWalletApp/epusdt/internal/securegateway.BuildCommit=${SOURCE_REVISION}" -o /out/epusdt ./cmd/secure
 
 FROM scratch
 ARG SOURCE_REVISION=uncommitted-local-validation
