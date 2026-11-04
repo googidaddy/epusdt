@@ -1,0 +1,83 @@
+name: secure-image
+
+# 把安全 profile 的网关镜像发布到 GHCR，让 RN 只需 docker pull，不再本地构建。
+# 与商城一致：push 只触发构建，不自动部署；部署一律用 digest，不用移动 tag。
+on:
+  push:
+    branches: [secure-profile-20261031]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: secure-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/googidaddy/dujiao-epusdt
+
+jobs:
+  # 构建前先跑完整检查：vet / test / race / govulncheck / 备份与 nginx 测试 / 镜像 fail-closed。
+  # 复用 secure-checks.yml，避免两条流水线各跑一遍同样的测试。
+  checks:
+    uses: ./.github/workflows/secure-checks.yml
+
+  publish:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+
+      - name: Build the secure image
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          TAG="sha-$(printf '%s' "$REVISION" | cut -c1-12)"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          docker build \
+            --file ops/secure/Dockerfile \
+            --build-arg "SOURCE_REVISION=$REVISION" \
+            --tag "$IMAGE:$TAG" \
+            .
+
+      - name: Push, record the digest and the binary hash
+        run: |
+          docker push "$IMAGE:$TAG"
+          DIGEST=$(docker image inspect "$IMAGE:$TAG" --format '{{index .RepoDigests 0}}')
+          # 二进制哈希用来和线上镜像逐字节比对，判断跨环境构建是否可复现
+          docker create --name image-probe "$IMAGE:$TAG" >/dev/null
+          docker cp image-probe:/epusdt /tmp/epusdt
+          docker rm image-probe >/dev/null
+          BIN_SHA=$(sha256sum /tmp/epusdt | cut -d' ' -f1)
+          echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          {
+            echo "### 网关镜像已发布"
+            echo ""
+            echo '```'
+            echo "commit  : ${{ github.sha }}"
+            echo "tag     : $IMAGE:$TAG"
+            echo "digest  : $DIGEST"
+            echo "binary  : sha256:$BIN_SHA"
+            echo '```'
+            echo ""
+            echo "部署用 digest，不要用 tag。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the pushed image is pullable by digest
+        run: |
+          docker pull "$DIGEST"
+          docker image inspect "$DIGEST" \
+            --format 'revision={{index .Config.Labels "org.opencontainers.image.revision"}}'
+          test "$(docker image inspect "$DIGEST" \
+            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" \
+            = "${{ github.sha }}"

@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+  # 发布分支不单独触发：由 secure-image.yml 调用，作为构建前的门槛，避免同一份提交跑两遍。
+  workflow_call:
 
 permissions:
   contents: read
