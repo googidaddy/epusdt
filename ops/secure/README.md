@@ -88,7 +88,9 @@ BSC 不满 10 块的连续范围最多等待 5 秒（受较小扫描间隔约束
 
 按 0.45 秒/块、满批且无重试估算，分源并凑批后的 Alchemy 推进与无事件 WSS 统计约 36.288M CU/30 天；单个公开免费额度 30M 仍不够，两个账号合计 60M 的可用余量还须核对实际周期 / 用量。失败重试、实际事件、商城核验和不满批另计，不宣称免费无限使用。
 
-商城配置另合并 `ops/maimen/payment-chain-verification.example.yml`，为每链配置两家独立 HTTPS RPC、可信主网锚点；网关 WSS 和商城 HTTPS 的同一服务商不算两个来源。RPC 矩阵见 [rpc-acceptance.md](rpc-acceptance.md)。三个开关及 Telegram 都保持默认 false，直到现场门槛逐项通过；商城 `/app/payment-ops` 控制冻结与审计，详见商城 `ops/maimen/payment-automation-control.md`。
+商城配置另合并 `ops/maimen/payment-chain-verification.example.yml`，为每链配置两家独立 HTTPS RPC、可信主网锚点；网关 WSS 和商城 HTTPS 的同一服务商不算两个来源。RPC 矩阵见 [rpc-acceptance.md](rpc-acceptance.md)。~~三个开关及 Telegram 都保持默认 false，直到现场门槛逐项通过~~ → **2026-11-01 已全部通过并在 185101 开启**（三开关 true、栅栏 rev 2、Telegram 告警已开）；ougv 仍全关。商城 `/app/payment-ops` 控制冻结与审计，详见商城 `ops/maimen/payment-automation-control.md`。
+
+**网关侧 2026-11-01 新增主备节点**：`gateway.json` 支持 `tron_url_fallbacks[]` / `bsc_https_fallbacks[]`。安全网关的白名单只认配置里这些值（**不从 `rpc_nodes` 表推导**），主节点排第一保证健康时优先。TRON 备用允许带凭据路径（Chainstack），不允许结尾斜杠。回填循环健康跑满 1 分钟后失败会重置退避到 2 秒。当前部署见 [作业单](../../../docs/operations/payment-runbook.md) §6.9.1。
 
 ## 更新、回退与轮换
 
