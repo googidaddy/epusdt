@@ -134,9 +134,18 @@ python3 ops/secure/restore-prepare.py --snapshot /opt/private-restore/snapshot -
 
 ## 持续集成
 
-工作区新增 `.github/workflows/secure-checks.yml`，覆盖完整 Go / vet、关键包 race、secure 入口 govulncheck v1.8.0、带真实 age 的合成备份，以及 secure 镜像构建和缺配置拒绝启动检查。它仅用 GitHub 托管临时资源、contents:read，不发布镜像、不读取私有文件或连接 RN；旧上游发布限制保持。
+两条流水线，都只使用 GitHub 托管临时资源、`contents: read`，不读取私有文件、不连接 RN：
 
-**2026-11-01 状态**：已提交、已推送、GitHub Actions 已跑通（两个 PR 全绿，含首跑时抓到的 GO-2026-6809 修复）。工作流只做检查、不发布镜像；网关镜像仍按自有 fork 的 clean SHA 在 RN 本地构建。
+| 工作流 | 触发 | 作用 |
+|---|---|---|
+| `secure-checks.yml` | push / PR 到 `master`，或作为可复用工作流被调用 | 完整 Go / vet、关键包 race、secure 入口 govulncheck v1.8.0、带真实 age 的合成备份与隔离 nginx 测试、secure 镜像构建和缺配置拒绝启动 |
+| `secure-image.yml` | push 到 `secure-profile-20261031`，或手动 dispatch | 先以 `secure-checks` 为门槛，通过后构建并推 `ghcr.io/googidaddy/dujiao-epusdt:sha-<12>` |
+
+部署只用 digest，不用移动 tag；升级与回滚步骤在商城侧 `docs/operations/deploy.md` §4。
+
+**二进制带版本号**：`-X …internal/securegateway.BuildCommit=${SOURCE_REVISION}` 在链接时写入源码提交，启动第一行日志即打印 `[build] secure gateway revision=<sha>`。这个参数此前指向 `config.BuildCommit`，而 `cmd/secure` 不 import `config`，符号被链接器当死代码丢弃、参数静默失效，所以历史镜像都不带版本号。变量现在放在 `internal/securegateway` 并由入口读取，发布流水线会校验二进制里确实含有本次提交号，不含即失败。**不要把变量挪回 `config` 包**——import 它会把 MySQL、Redis 等上游依赖拉进这个最小二进制。
+
+**2026-11-04 状态**：镜像已改为 CI 构建 + GHCR 发布，RN 不再本地构建。
 
 ## 本地检查入口
 
